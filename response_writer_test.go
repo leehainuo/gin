@@ -170,6 +170,7 @@ func TestResponseWriterHijackAfterWrite(t *testing.T) {
 		expectWrittenBeforeHijack bool
 		expectHijackSuccess       bool
 		expectWrittenAfterHijack  bool
+		expectSizeAfterHijack     int
 		expectError               error
 	}{
 		{
@@ -178,6 +179,7 @@ func TestResponseWriterHijackAfterWrite(t *testing.T) {
 			expectWrittenBeforeHijack: false,
 			expectHijackSuccess:       true,
 			expectWrittenAfterHijack:  true, // Hijack itself marks the writer as written
+			expectSizeAfterHijack:     0,
 			expectError:               nil,
 		},
 		{
@@ -189,6 +191,7 @@ func TestResponseWriterHijackAfterWrite(t *testing.T) {
 			expectWrittenBeforeHijack: true,
 			expectHijackSuccess:       false,
 			expectWrittenAfterHijack:  true,
+			expectSizeAfterHijack:     4,
 			expectError:               errHijackAlreadyWritten,
 		},
 	}
@@ -216,8 +219,57 @@ func TestResponseWriterHijackAfterWrite(t *testing.T) {
 			require.ErrorIs(t, hijackErr, tc.expectError, "unexpected error from Hijack()")
 			assert.Equal(t, tc.expectHijackSuccess, hijacker.hijacked, "unexpected hijacker.hijacked state")
 			assert.Equal(t, tc.expectWrittenAfterHijack, w.Written(), "unexpected w.Written() state after hijack")
+			assert.Equal(t, tc.expectSizeAfterHijack, w.Size(), "unexpected w.Size() state after hijack")
 		})
 	}
+}
+
+type failingHijacker struct {
+	*httptest.ResponseRecorder
+}
+
+func (f *failingHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return nil, nil, http.ErrNotSupported
+}
+
+func TestResponseWriterHijackFailureKeepsWriterUsable(t *testing.T) {
+	testWriter := &failingHijacker{
+		ResponseRecorder: httptest.NewRecorder(),
+	}
+
+	writer := &responseWriter{}
+	writer.reset(testWriter)
+
+	w := ResponseWriter(writer)
+
+	conn, buf, err := w.Hijack()
+
+	assert.Nil(t, conn)
+	assert.Nil(t, buf)
+	require.ErrorIs(t, err, http.ErrNotSupported)
+
+	// Hijacking failed before any response was written.
+	// Keep the writer untouched so the handler can still
+	// emit a normal HTTP response as a fallback.
+	assert.False(t, w.Written())
+	assert.Equal(t, noWritten, w.Size())
+
+	http.Error(
+		w,
+		"hijack failed",
+		http.StatusInternalServerError,
+	)
+
+	assert.Equal(
+		t,
+		http.StatusInternalServerError,
+		testWriter.Code,
+	)
+	assert.Equal(
+		t,
+		"hijack failed\n",
+		testWriter.Body.String(),
+	)
 }
 
 // TestResponseWriterHijackAfterWriteHeaderNow verifies that hijacking is allowed after

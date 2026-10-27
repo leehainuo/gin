@@ -108,6 +108,7 @@ func (w *responseWriter) Written() bool {
 }
 
 // Hijack implements the http.Hijacker interface.
+// On error, the writer state is left unchanged so callers can send a fallback HTTP response.
 func (w *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	// Allow hijacking before any data is written (size == -1) or after headers are written (size == 0),
 	// but not after body data is written (size > 0). For compatibility with websocket libraries (e.g., github.com/coder/websocket)
@@ -118,10 +119,11 @@ func (w *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if !ok {
 		return nil, nil, http.ErrNotSupported
 	}
-	if w.size < 0 {
+	conn, rw, err := hijacker.Hijack()
+	if err == nil && w.size < 0 {
 		w.size = 0
 	}
-	return hijacker.Hijack()
+	return conn, rw, err
 }
 
 // CloseNotify implements the http.CloseNotifier interface.
